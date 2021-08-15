@@ -789,7 +789,7 @@ void*		pt_proxy(void *args) {
 			
 			//	Check for any icmp packets requiring resend, and resend _only_ the first packet.
 			idx	= cur->send_first_ack;
-			if (cur->send_ring[idx].pkt && cur->send_ring[idx].last_resend+kResend_interval < now) {
+			while (cur->send_ring[idx].pkt && cur->send_ring[idx].last_resend+kResend_interval < now) {
 				pt_log(kLog_debug, "Resending packet with seq-no %d.\n", cur->send_ring[idx].seq_no);
 				cur->send_ring[idx].last_resend		= now;
 				cur->send_ring[idx].pkt->seq		= htons(cur->ping_seq);
@@ -799,9 +799,12 @@ void*		pt_proxy(void *args) {
 				//printf("ID: %d\n", htons(cur->send_ring[idx].pkt->identifier));
 				sendto(fwd_sock, (const void*)cur->send_ring[idx].pkt, cur->send_ring[idx].pkt_len, 0, (struct sockaddr*)&cur->dest_addr, sizeof(struct sockaddr));
 				cur->xfer.icmp_resent++;
+				++ idx;
+				if (idx == kPing_window_size)
+					idx = 0;
 			}
 			//	Figure out if it's time to send an explicit acknowledgement
-			if (cur->last_ack+1.0 < now && cur->send_wait_ack < kPing_window_size && cur->remote_ack_val+1 != cur->next_remote_seq) {
+			if ((cur->last_ack+1.0 < now || cur->xfer.icmp_in % (kPing_window_size/2)==0) && cur->send_wait_ack < kPing_window_size && cur->remote_ack_val+1 != cur->next_remote_seq) {
 				cur->last_ack	= now;
 				queue_packet(fwd_sock, cur->pkt_type, 0, 0, cur->id_no, cur->icmp_id, &cur->my_seq, cur->send_ring, &cur->send_idx, &cur->send_wait_ack, cur->dst_ip, cur->dst_port, kProto_ack | cur->type_flag, &cur->dest_addr, cur->next_remote_seq, &cur->send_first_ack, &cur->ping_seq);
 				cur->xfer.icmp_ack_out++;
