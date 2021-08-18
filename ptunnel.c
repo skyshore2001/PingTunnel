@@ -728,7 +728,7 @@ void*		pt_proxy(void *args) {
 			if (cur->state == kProxy_start) {
 				pt_log(kLog_verbose, "Sending proxy request.\n");
 //				cur->last_ack	= time_as_double();
-				queue_packet(fwd_sock, cur->pkt_type, 0, 0, cur->id_no, cur->id_no, &cur->my_seq, cur->send_ring, &cur->send_idx, &cur->send_wait_ack, cur->dst_ip, cur->dst_port, cur->state | cur->type_flag, &cur->dest_addr, cur->next_remote_seq, &cur->send_first_ack, &cur->ping_seq);
+				queue_packet(fwd_sock, cur, cur->state, 0, 0);
 				cur->xfer.icmp_out++;
 				cur->state		= kProto_data;
 			}
@@ -757,7 +757,7 @@ void*		pt_proxy(void *args) {
 				}
 				cur->xfer.bytes_out	+= bytes;
 				cur->xfer.icmp_out++;
-				queue_packet(fwd_sock, cur->pkt_type, cur->buf, bytes, cur->id_no, cur->icmp_id, &cur->my_seq, cur->send_ring, &cur->send_idx, &cur->send_wait_ack, 0, 0, cur->state | cur->type_flag, &cur->dest_addr, cur->next_remote_seq, &cur->send_first_ack, &cur->ping_seq);
+				queue_packet(fwd_sock, cur, cur->state, cur->buf, bytes);
 			}
 			prev	= cur;
 			tmp		= cur->next;
@@ -804,7 +804,7 @@ void*		pt_proxy(void *args) {
 			//	Figure out if it's time to send an explicit acknowledgement
 			if ((is_timeout || cur->xfer.icmp_in % (kPing_window_size/2)==0) && cur->send_wait_ack < kPing_window_size && cur->remote_ack_val+1 != cur->next_remote_seq) {
 //				cur->last_ack	= now;
-				queue_packet(fwd_sock, cur->pkt_type, 0, 0, cur->id_no, cur->icmp_id, &cur->my_seq, cur->send_ring, &cur->send_idx, &cur->send_wait_ack, cur->dst_ip, cur->dst_port, kProto_ack | cur->type_flag, &cur->dest_addr, cur->next_remote_seq, &cur->send_first_ack, &cur->ping_seq);
+				queue_packet(fwd_sock, cur, kProto_ack, 0, 0);
 				cur->xfer.icmp_ack_out++;
 			}
 			// if the send queue is full, simple wait 1ms
@@ -986,12 +986,12 @@ void		handle_packet(char *buf, int bytes, int is_pcap, struct sockaddr_in *addr,
 			
 			pkt_flag		= pt_pkt->state & kFlag_mask;
 			pt_pkt->state	&= ~kFlag_mask;
-			pt_log(kLog_sendrecv, "Recv: %d [%d] bytes [seq = %d] [type = %s] [ack = %d] [icmp = %d] [user = %s] [pcap = %d]\n",
+			//	This test essentially verifies that the packet comes from someone who isn't us.
+			if ((pkt_flag == kUser_flag && type_flag == kProxy_flag) || (pkt_flag == kProxy_flag && type_flag == kUser_flag)) {
+				pt_log(kLog_sendrecv, "Recv: %d [%d] bytes [seq = %d] [type = %s] [ack = %d] [icmp = %d] [user = %s] [pcap = %d]\n",
 								bytes, ntohl(pt_pkt->data_len), pt_pkt->seq_no, state_name[pt_pkt->state & (~kFlag_mask)],
 								ntohl(pt_pkt->ack), pkt->type, (pkt_flag == kUser_flag ? "yes" : "no"), is_pcap);
 			
-			//	This test essentially verifies that the packet comes from someone who isn't us.
-			if ((pkt_flag == kUser_flag && type_flag == kProxy_flag) || (pkt_flag == kProxy_flag && type_flag == kUser_flag)) {
 				pt_pkt->data_len	= ntohl(pt_pkt->data_len);
 				pt_pkt->ack			= ntohl(pt_pkt->ack);
 				if (pt_pkt->state == kProxy_start) {
@@ -1017,7 +1017,7 @@ void		handle_packet(char *buf, int bytes, int is_pcap, struct sockaddr_in *addr,
 							//	Send challenge
 							cur->challenge	= generate_challenge();
 							memcpy(cur->buf, cur->challenge, sizeof(challenge_t));
-							queue_packet(icmp_sock, cur->pkt_type, cur->buf, sizeof(challenge_t), cur->id_no, cur->icmp_id, &cur->my_seq, cur->send_ring, &cur->send_idx, &cur->send_wait_ack, 0, 0, kProto_authenticate | cur->type_flag, &cur->dest_addr, cur->next_remote_seq, &cur->send_first_ack, &cur->ping_seq);
+							queue_packet(icmp_sock, cur, kProto_authenticate, cur->buf, sizeof(challenge_t));
 						}
 					}
 					else if (type_flag == kUser_flag) {
@@ -1048,7 +1048,7 @@ void		handle_packet(char *buf, int bytes, int is_pcap, struct sockaddr_in *addr,
 						}
 						pt_log(kLog_debug, "Got authentication challenge - sending response\n");
 						generate_response(challenge);
-						queue_packet(icmp_sock, cur->pkt_type, (char*)challenge, sizeof(challenge_t), cur->id_no, cur->icmp_id, &cur->my_seq, cur->send_ring, &cur->send_idx, &cur->send_wait_ack, 0, 0, kProto_authenticate | cur->type_flag, &cur->dest_addr, cur->next_remote_seq, &cur->send_first_ack, &cur->ping_seq);
+						queue_packet(icmp_sock, cur, kProto_authenticate, (char*)challenge, sizeof(challenge_t));
 						//	We have authenticated locally. It's up to the proxy now if it accepts our response or not..
 						cur->authenticated	= 1;
 						handle_data(pkt, bytes, cur->recv_ring, &cur->recv_wait_send, &cur->recv_idx, &cur->next_remote_seq);
@@ -1090,9 +1090,14 @@ void		handle_packet(char *buf, int bytes, int is_pcap, struct sockaddr_in *addr,
 				if (cur && cur->sock) {
 					if (pt_pkt->state == kProto_data || pt_pkt->state == kProxy_start || pt_pkt->state == kProto_ack)
 						handle_data(pkt, bytes, cur->recv_ring, &cur->recv_wait_send, &cur->recv_idx, &cur->next_remote_seq);
-					handle_ack((uint16_t)pt_pkt->ack, cur->send_ring, &cur->send_wait_ack, 0, cur->send_idx, &cur->send_first_ack, &cur->remote_ack_val, is_pcap);
+					handle_ack(pt_pkt, cur);
 					cur->last_activity		= time_as_double();
 				}
+			}
+			else {
+				// ignore icmp packets sent by myself... why can i receive this?
+				pt_log(kLog_sendrecv, "Recv but ignored: %d [%d] bytes [user = %s]\n",
+								bytes, ntohl(pt_pkt->data_len), (pkt_flag == kUser_flag ? "yes" : "no"));
 			}
 		}
 		else
@@ -1206,7 +1211,21 @@ static int ip_id_counter	= 1;
 	Creates an ICMP packet descriptor, and sends it. The packet descriptor is added
 	to the given send ring, for potential resends later on.
 */
-int			queue_packet(int icmp_sock, uint8_t type, char *buf, int num_bytes, uint16_t id_no, uint16_t icmp_id, uint16_t *seq, icmp_desc_t ring[], int *insert_idx, int *await_send, uint32_t ip, uint32_t port, uint32_t state, struct sockaddr_in *dest_addr, uint16_t next_expected_seq, int *first_ack, uint16_t *ping_seq) {
+int			queue_packet(int icmp_sock, proxy_desc_t *cur, uint32_t state, char *buf, int num_bytes) {
+	uint16_t id_no = cur->id_no;
+	uint16_t icmp_id = cur->icmp_id;
+	uint16_t *seq = &cur->my_seq;
+	icmp_desc_t *ring = cur->send_ring;
+	int *insert_idx = &cur->send_idx, *await_send = &cur->send_wait_ack;
+	uint32_t ip = cur->dst_ip;
+	uint32_t port = cur->dst_port;
+	int *first_ack = &cur->send_first_ack;
+	uint16_t *ping_seq = &cur->ping_seq;
+	bool add_to_queue = state != kProto_ack;
+	struct sockaddr_in *dest_addr = &cur->dest_addr;
+
+	state |= cur->type_flag;
+	
 	#if kPT_add_iphdr
 	ip_packet_t			*ip_pkt	= 0;
 	int					pkt_len	= sizeof(ip_packet_t)+sizeof(icmp_echo_packet_t)+sizeof(ping_tunnel_pkt_t)+num_bytes,
@@ -1216,9 +1235,8 @@ int			queue_packet(int icmp_sock, uint8_t type, char *buf, int num_bytes, uint16
 						err		= 0;
 	icmp_echo_packet_t	*pkt	= 0;
 	ping_tunnel_pkt_t	*pt_pkt	= 0;
-	uint16_t			ack_val	= next_expected_seq-1;
-	
-	
+	uint16_t			ack_val	= cur->next_remote_seq-1;
+
 	if (pkt_len % 2)
 		pkt_len++;
 	
@@ -1241,7 +1259,7 @@ int			queue_packet(int icmp_sock, uint8_t type, char *buf, int num_bytes, uint16
 	pkt						= malloc(pkt_len);
 	#endif
 	
-	pkt->type				= type;		//	ICMP Echo request or reply
+	pkt->type				= cur->pkt_type;		//	ICMP Echo request or reply
 	pkt->code				= 0;		//	Must be zero (non-zero requires root)
 	pkt->identifier			= htons(icmp_id);
 	pkt->seq				= htons(*ping_seq);
@@ -1269,7 +1287,7 @@ int			queue_packet(int icmp_sock, uint8_t type, char *buf, int num_bytes, uint16
 	
 	//	Send it!
 	pt_log(kLog_sendrecv, "Send: %d [%d] bytes [seq = %d] [type = %s] [ack = %d] [icmp = %d] [user = %s]\n",
-			pkt_len, num_bytes, *seq, state_name[state & (~kFlag_mask)], ack_val, type, ((state & kUser_flag) == kUser_flag ? "yes" : "no"));
+			pkt_len, num_bytes, *seq, state_name[state & (~kFlag_mask)], ack_val, cur->pkt_type, ((state & kUser_flag) == kUser_flag ? "yes" : "no"));
 	#if kPT_add_iphdr
 	err						= sendto(icmp_sock, (const void*)ip_pkt, pkt_len, 0, (struct sockaddr*)dest_addr, sizeof(struct sockaddr));
 	#else
@@ -1282,6 +1300,12 @@ int			queue_packet(int icmp_sock, uint8_t type, char *buf, int num_bytes, uint16
 	else if (err != pkt_len)
 		pt_log(kLog_error, "WARNING WARNING, didn't send entire packet\n");
 	
+	cur->remote_ack_val = ack_val;
+	if (! add_to_queue) {
+		(*seq)++;
+		return 0;
+	}
+
 	//	Update sequence no's and so on
 	#if kPT_add_iphdr
 	//	NOTE: Retry mechanism needs update for PT_add_ip_hdr
@@ -1424,66 +1448,45 @@ void		handle_data(icmp_echo_packet_t *pkt, int total_len, forward_desc_t *ring[]
 }
 
 
-void		handle_ack(uint16_t seq_no, icmp_desc_t ring[], int *packets_awaiting_ack, int one_ack_only, int insert_idx, int *first_ack, uint16_t *remote_ack, int is_pcap) {
-	int		i, j, k;
-	ping_tunnel_pkt_t	*pt_pkt;
+void		handle_ack(ping_tunnel_pkt_t *pt_pkt, proxy_desc_t *cur) {
 	
-	if (*packets_awaiting_ack > 0) {
-		if (one_ack_only) {
-			for (i=0;i<kPing_window_size;i++) {
-				if (ring[i].pkt && ring[i].seq_no == seq_no && !is_pcap) {
-					pt_log(kLog_debug, "Received ack for only seq %d\n", seq_no);
-					pt_pkt	= (ping_tunnel_pkt_t*)ring[i].pkt->data;
-					*remote_ack	= (uint16_t)ntohl(pt_pkt->ack);	//	WARNING: We make the dangerous assumption here that packets arrive in order!
-					free(ring[i].pkt);
-					ring[i].pkt	= 0;
-					(*packets_awaiting_ack)--;
-					if (i == *first_ack) {
-						for (j=1;j<kPing_window_size;j++) {
-							k	= (i+j)%kPing_window_size;
-							if (ring[k].pkt) {
-								*first_ack	= k;
-								break;
-							}
-							if (k == i)	//	we have looped through everything
-								*first_ack	= insert_idx;
-							j++;
-						}
-					}
-					return;
-				}
-			}
+	if (cur->send_wait_ack == 0)
+		return;
+
+	icmp_desc_t *ring = cur->send_ring;
+	uint16_t seq_no = (uint16_t)pt_pkt->ack;
+
+	int	i, can_ack = 0, count = 0;
+	i	= cur->send_idx-1; // insert_idx
+	if (i < 0)
+		i	= kPing_window_size - 1;
+	
+	pt_log(kLog_debug, "Received ack-series starting at seq %d\n", seq_no);
+	while (count < kPing_window_size) {
+		if (!ring[i].pkt)
+			break;
+		// NOTE: ACK packet is not in the send queue; 
+		// NOTE: the 16-bit seq_no may be wrapped: 65535,0,1,...
+		// if (ring[i].seq_no == seq_no)
+		if (ring[i].seq_no <= seq_no || (ring[i].seq_no - seq_no > 60000 && ring[i].seq_no < (int)seq_no + 0xFFFF))
+			can_ack	= 1;
+		else if (!can_ack)
+			cur->send_first_ack	= i;
+		
+		if (can_ack) {
+			free(ring[i].pkt);
+			ring[i].pkt	= 0;
+			-- cur->send_wait_ack;
 		}
-		else {
-			int	i, can_ack = 0, count = 0;
-			i	= insert_idx-1;
-			if (i < 0)
-				i	= kPing_window_size - 1;
-			
-			pt_log(kLog_debug, "Received ack-series starting at seq %d\n", seq_no);
-			while (count < kPing_window_size) {
-				if (!ring[i].pkt)
-					break;
-				
-				if (ring[i].seq_no == seq_no)
-					can_ack	= 1;
-				else if (!can_ack)
-					*first_ack	= i;
-				
-				if (can_ack) {
-					free(ring[i].pkt);
-					ring[i].pkt	= 0;
-					(*packets_awaiting_ack)--;
-				}
-				i--;
-				if (i < 0)
-					i	= kPing_window_size - 1;
-				count++;
-			}
-		}
+		i--;
+		if (i < 0)
+			i	= kPing_window_size - 1;
+		count++;
 	}
-//	else
-//		pt_log(kLog_verbose, "Dropping superfluous acknowledgement (no outstanding packets needing ack.)\n");
+	// for the received ACK packet, dont send ACK again
+	if (can_ack && pt_pkt->state == kProto_ack) {
+		cur->remote_ack_val = seq_no;
+	}
 }
 
 
@@ -1574,8 +1577,8 @@ int				validate_challenge(challenge_t *local, challenge_t *remote) {
 */
 void		send_termination_msg(proxy_desc_t *cur, int icmp_sock) {
 	//	Send packet twice, hoping at least one of them makes it through..
-	queue_packet(icmp_sock, cur->pkt_type, 0, 0, cur->id_no, cur->icmp_id, &cur->my_seq, cur->send_ring, &cur->send_idx, &cur->send_wait_ack, 0, 0, kProto_close | cur->type_flag, &cur->dest_addr, cur->next_remote_seq, &cur->send_first_ack, &cur->ping_seq);
-	queue_packet(icmp_sock, cur->pkt_type, 0, 0, cur->id_no, cur->icmp_id, &cur->my_seq, cur->send_ring, &cur->send_idx, &cur->send_wait_ack, 0, 0, kProto_close | cur->type_flag, &cur->dest_addr, cur->next_remote_seq, &cur->send_first_ack, &cur->ping_seq);
+	queue_packet(icmp_sock, cur, kProto_close, 0, 0);
+	queue_packet(icmp_sock, cur, kProto_close, 0, 0);
 	cur->xfer.icmp_out	+= 2;
 }
 
