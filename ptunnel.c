@@ -718,7 +718,8 @@ void*		pt_proxy(void *args) {
 		pthread_mutex_unlock(&chain_lock);
 		timeout.tv_sec		= 0;
 		timeout.tv_usec		= 10000;
-		select(max_sock, &set, 0, 0, &timeout);	//	Don't care about return val, since we need to check for new states anyway..
+		int rv = select(max_sock, &set, 0, 0, &timeout);	//	Don't care about return val, since we need to check for new states anyway..
+		int is_timeout = rv == 0;
 		
 		pthread_mutex_lock(&chain_lock);
 		for (prev=0,cur=chain;cur && cur->sock;cur=tmp) {
@@ -726,7 +727,7 @@ void*		pt_proxy(void *args) {
 			//	causing him to connect to our desired endpoint.
 			if (cur->state == kProxy_start) {
 				pt_log(kLog_verbose, "Sending proxy request.\n");
-				cur->last_ack	= time_as_double();
+//				cur->last_ack	= time_as_double();
 				queue_packet(fwd_sock, cur->pkt_type, 0, 0, cur->id_no, cur->id_no, &cur->my_seq, cur->send_ring, &cur->send_idx, &cur->send_wait_ack, cur->dst_ip, cur->dst_port, cur->state | cur->type_flag, &cur->dest_addr, cur->next_remote_seq, &cur->send_first_ack, &cur->ping_seq);
 				cur->xfer.icmp_out++;
 				cur->state		= kProto_data;
@@ -789,8 +790,8 @@ void*		pt_proxy(void *args) {
 			
 			//	Check for any icmp packets requiring resend, and resend _only_ the first packet.
 			idx	= cur->send_first_ack;
-			while (cur->send_ring[idx].pkt && cur->send_ring[idx].last_resend+kResend_interval < now) {
-				pt_log(kLog_debug, "Resending packet with seq-no %d.\n", cur->send_ring[idx].seq_no);
+			if (cur->send_ring[idx].pkt && cur->send_ring[idx].last_resend+kResend_interval < now) {
+				pt_log(kLog_event, "Resending packet with seq-no %d.\n", cur->send_ring[idx].seq_no);
 				cur->send_ring[idx].last_resend		= now;
 				cur->send_ring[idx].pkt->seq		= htons(cur->ping_seq);
 				cur->ping_seq++;
@@ -799,16 +800,16 @@ void*		pt_proxy(void *args) {
 				//printf("ID: %d\n", htons(cur->send_ring[idx].pkt->identifier));
 				sendto(fwd_sock, (const void*)cur->send_ring[idx].pkt, cur->send_ring[idx].pkt_len, 0, (struct sockaddr*)&cur->dest_addr, sizeof(struct sockaddr));
 				cur->xfer.icmp_resent++;
-				++ idx;
-				if (idx == kPing_window_size)
-					idx = 0;
 			}
 			//	Figure out if it's time to send an explicit acknowledgement
-			if ((cur->last_ack+1.0 < now || cur->xfer.icmp_in % (kPing_window_size/2)==0) && cur->send_wait_ack < kPing_window_size && cur->remote_ack_val+1 != cur->next_remote_seq) {
-				cur->last_ack	= now;
+			if ((is_timeout || cur->xfer.icmp_in % (kPing_window_size/2)==0) && cur->send_wait_ack < kPing_window_size && cur->remote_ack_val+1 != cur->next_remote_seq) {
+//				cur->last_ack	= now;
 				queue_packet(fwd_sock, cur->pkt_type, 0, 0, cur->id_no, cur->icmp_id, &cur->my_seq, cur->send_ring, &cur->send_idx, &cur->send_wait_ack, cur->dst_ip, cur->dst_port, kProto_ack | cur->type_flag, &cur->dest_addr, cur->next_remote_seq, &cur->send_first_ack, &cur->ping_seq);
 				cur->xfer.icmp_ack_out++;
 			}
+			// if the send queue is full, simple wait 1ms
+			if (cur->send_wait_ack == kPing_window_size)
+				usleep(1000);
 		}
 		pthread_mutex_unlock(&chain_lock);
 		if (pcap) {
@@ -1377,7 +1378,7 @@ void		handle_data(icmp_echo_packet_t *pkt, int total_len, forward_desc_t *ring[]
 			(*insert_idx)++;
 		}
 		else if (ring[*insert_idx])
-			pt_log(kLog_debug, "Dup packet?\n");
+			pt_log(kLog_event, "Dup packet? seq_no=%d\n", pt_pkt->seq_no);
 		
 		(*next_expected_seq)++;
 		if (*insert_idx >= kPing_window_size)
@@ -1412,7 +1413,7 @@ void		handle_data(icmp_echo_packet_t *pkt, int total_len, forward_desc_t *ring[]
 		
 		if (pos != -1) {
 			if (!ring[pos]) {
-				pt_log(kLog_verbose, "Out of order. Expected: %d  Got: %d  Inserted: %d (cur = %d)\n", *next_expected_seq, pt_pkt->seq_no, pos, (*insert_idx));
+				pt_log(kLog_event, "Out of order. Expected: %d  Got: %d  Inserted: %d (cur = %d)\n", *next_expected_seq, pt_pkt->seq_no, pos, (*insert_idx));
 				ring[pos]	= create_fwd_desc(pt_pkt->seq_no, pt_pkt->data_len, pt_pkt->data);
 				(*await_send)++;
 			}
