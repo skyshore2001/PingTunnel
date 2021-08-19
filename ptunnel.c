@@ -306,6 +306,7 @@ int		main(int argc, char *argv[]) {
 	}
 	pt_log(kLog_info, "Starting ptunnel v %d.%.2d.\n", kMajor_version, kMinor_version);
 	pt_log(kLog_info, "(c) 2004-2011 Daniel Stoedle, <daniels@cs.uit.no>\n");
+	pt_log(kLog_info, "Performance tunning version @2021 by LIANG Jian <liangjian_2001@126.com>\n");
 	#ifdef WIN32
 	pt_log(kLog_info, "Windows version by Mike Miller, <mike@mikeage.net>\n");
 	#else
@@ -1097,7 +1098,7 @@ void		handle_packet(char *buf, int bytes, int is_pcap, struct sockaddr_in *addr,
 				}
 			}
 			else {
-				// ignore icmp packets sent by myself... why can i receive this?
+				// ignore icmp packets sent by myself... why can i receive this? Reason: It's the server-side auto reply for icmp-request.
 				pt_log(kLog_sendrecv, "Recv but ignored: %d [%d] bytes [user = %s]\n",
 								bytes, ntohl(pt_pkt->data_len), (pkt_flag == kUser_flag ? "yes" : "no"));
 			}
