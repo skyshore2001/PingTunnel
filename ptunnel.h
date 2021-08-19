@@ -136,7 +136,7 @@ enum {
 	kICMP_echo_request		= 8,	//	Type code for echo request and replies
 	kICMP_echo_reply		= 0,
 	
-	kPing_window_size		= 2,	// number of packets we can have in our send/receive ring
+	kPing_window_size		= 8,	// number of packets we can have in our send/receive ring
 	
 	/*	Tunnels are automatically closed after one minute of inactivity. Since
 		we continously send acknowledgements between the two peers, this mechanism
