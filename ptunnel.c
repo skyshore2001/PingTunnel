@@ -31,7 +31,7 @@
 	POSSIBILITY OF SUCH DAMAGE.
 		
 	Contacting the author:
-	You can get in touch with me, Daniel Stødle (that's the Norwegian letter oe,
+	You can get in touch with me, Daniel Stoedle (that's the Norwegian letter oe,
 	in case your text editor didn't realize), here: <daniels@cs.uit.no>
 	
 	The official ptunnel website is here:
@@ -796,7 +796,7 @@ void*		pt_proxy(void *args) {
 				cur->send_ring[idx].pkt->seq		= htons(cur->ping_seq);
 				cur->ping_seq++;
 				cur->send_ring[idx].pkt->checksum	= 0;
-				cur->send_ring[idx].pkt->checksum	= htons(calc_icmp_checksum((uint16_t*)cur->send_ring[idx].pkt, cur->send_ring[idx].pkt_len));
+				cur->send_ring[idx].pkt->checksum	= ~calc_checksum(cur->send_ring[idx].pkt, cur->send_ring[idx].pkt_len);
 				//printf("ID: %d\n", htons(cur->send_ring[idx].pkt->identifier));
 				sendto(fwd_sock, (const void*)cur->send_ring[idx].pkt, cur->send_ring[idx].pkt_len, 0, (struct sockaddr*)&cur->dest_addr, sizeof(struct sockaddr));
 				cur->xfer.icmp_resent++;
@@ -1285,10 +1285,10 @@ int			queue_packet(int icmp_sock, proxy_desc_t *cur, uint32_t state, char *buf, 
 	if (buf && num_bytes > 0)
 		memcpy(pt_pkt->data, buf, num_bytes);
 	#if kPT_add_iphdr
-	pkt->checksum			= htons(calc_icmp_checksum((uint16_t*)pkt, pkt_len-sizeof(ip_packet_t)));
-	ip_pkt->checksum		= htons(calc_icmp_checksum((uint16_t*)ip_pkt, sizeof(ip_packet_t)));
+	pkt->checksum			= ~calc_checksum(pkt, pkt_len-sizeof(ip_packet_t));
+	ip_pkt->checksum		= ~calc_checksum(ip_pkt, sizeof(ip_packet_t));
 	#else
-	pkt->checksum			= htons(calc_icmp_checksum((uint16_t*)pkt, pkt_len));
+	pkt->checksum			= ~calc_checksum(pkt, pkt_len);
 	#endif
 	
 	//	Send it!
@@ -1523,22 +1523,30 @@ forward_desc_t*	create_fwd_desc(uint16_t seq_no, uint32_t data_len, char *data) 
 	return fwd_desc;
 }
 
+/*
+Usage: 
+checksum = ~calc_checksum(data, len);
 
-uint16_t	calc_icmp_checksum(uint16_t *data, int bytes) {
-	uint32_t		sum;
-	int				i;
-	
-	sum	= 0;
-	for (i=0;i<bytes/2;i++) {
-		//	WARNING; this might be a bug, but might explain why I occasionally
-		//	see buggy checksums.. (added htons, that might be the correct behaviour)
-		sum	+= data[i];
+NOTE: 
+- ~ is required;
+- htons is NOT required (it fits for both BE and LE)
+ */
+uint16_t	calc_checksum(const void *data, int bytes) {
+	uint32_t		sum = 0;
+	const uint16_t	*data_u16 = (const uint16_t*)data;
+	while (bytes > 1) {
+		sum	+= *data_u16 ++;
+		bytes -= 2;
 	}
-	sum	= (sum & 0xFFFF) + (sum >> 16);
-	sum	= htons(0xFFFF - sum);
+	if (bytes == 1) {
+		char a[2] = {*(char*)data, 0};
+		sum += *(uint16_t*)a;
+	}
+	while (sum >> 16) {
+		sum = (sum & 0xffff) + (sum >> 16);
+	}
 	return sum;
 }
-
 
 /*	generate_challenge: Generates a random challenge, incorporating the current
 	local timestamp to avoid replay attacks.

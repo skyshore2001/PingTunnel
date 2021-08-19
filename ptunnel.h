@@ -404,8 +404,7 @@ typedef struct {
 	void		handle_ack(ping_tunnel_pkt_t *pt_pkt, proxy_desc_t *cur);
 	forward_desc_t*	create_fwd_desc(uint16_t seq_no, uint32_t data_len, char *data);
 	void		init_ip_packet(ip_packet_t *packet, uint16_t id, uint16_t frag_offset, uint16_t pkt_len, uint8_t ttl, uint32_t src_ip, uint32_t dst_ip, bool is_last_frag, bool dont_frag);
-	uint16_t	calc_ip_checksum(ip_packet_t *pkt);
-	uint16_t	calc_icmp_checksum(uint16_t *data, int bytes);
+	uint16_t	calc_checksum(const void *data, int bytes);
 	
 	challenge_t*	generate_challenge(void);
 	void			generate_response(challenge_t *challenge);
