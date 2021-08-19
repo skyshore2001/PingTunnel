@@ -1084,7 +1084,7 @@ void		handle_packet(char *buf, int bytes, int is_pcap, struct sockaddr_in *addr,
 				//	The proxy will ignore any other packets from the client
 				//	until it has been authenticated. The packet resend mechanism
 				//	insures that this isn't problematic.
-				if (type_flag == kProxy_flag && password && cur && !cur->authenticated) {
+				if (type_flag == kProxy_flag && password && cur && !cur->authenticated && pt_pkt->state != kProxy_start) {
 					pt_log(kLog_debug, "Ignoring packet with seq-no %d - not authenticated yet.\n", pt_pkt->seq_no);
 					return;
 				}
