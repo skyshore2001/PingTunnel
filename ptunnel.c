@@ -801,9 +801,7 @@ void*		pt_proxy(void *args) {
 				cur->xfer.icmp_resent++;
 			}
 			//	Figure out if it's time to send an explicit acknowledgement
-			if (now - cur->last_ack > 1.0 || (
-						(is_timeout || cur->xfer.icmp_in % (kPing_window_size/2)==0) && (uint16_t)(cur->remote_ack_val+1) != cur->next_remote_seq
-			   )){
+			if ((is_timeout || cur->xfer.icmp_in % (kPing_window_size/2)==0) && (uint16_t)(cur->remote_ack_val+1) != cur->next_remote_seq){
 				queue_packet(fwd_sock, cur, kProto_ack, 0, 0);
 				cur->xfer.icmp_ack_out++;
 			}
@@ -1051,7 +1049,7 @@ void		handle_packet(char *buf, int bytes, int is_pcap, struct sockaddr_in *addr,
 						queue_packet(icmp_sock, cur, kProto_authenticate, (char*)challenge, sizeof(challenge_t));
 						//	We have authenticated locally. It's up to the proxy now if it accepts our response or not..
 						cur->authenticated	= 1;
-						handle_data(pkt, bytes, cur->recv_ring, &cur->recv_wait_send, &cur->recv_idx, &cur->next_remote_seq);
+						handle_data(pkt, bytes, cur, icmp_sock);
 						return;
 					}
 					//	If proxy: Handle client's response to challenge
@@ -1063,7 +1061,7 @@ void		handle_packet(char *buf, int bytes, int is_pcap, struct sockaddr_in *addr,
 							cur->authenticated	= 1;
 							cur->state			= kProto_data;
 							//	Insert the packet into the receive ring, to avoid confusing the	reliability mechanism.
-							handle_data(pkt, bytes, cur->recv_ring, &cur->recv_wait_send, &cur->recv_idx, &cur->next_remote_seq);
+							handle_data(pkt, bytes, cur, icmp_sock);
 						}
 						else {
 							pt_log(kLog_info, "Remote end failed authentication.\n");
@@ -1089,7 +1087,7 @@ void		handle_packet(char *buf, int bytes, int is_pcap, struct sockaddr_in *addr,
 				
 				if (cur && cur->sock) {
 					if (pt_pkt->state == kProto_data || pt_pkt->state == kProxy_start || pt_pkt->state == kProto_ack)
-						handle_data(pkt, bytes, cur->recv_ring, &cur->recv_wait_send, &cur->recv_idx, &cur->next_remote_seq);
+						handle_data(pkt, bytes, cur, icmp_sock);
 					handle_ack(pt_pkt, cur);
 					cur->last_activity		= time_as_double();
 				}
@@ -1373,7 +1371,13 @@ uint32_t	send_packets(forward_desc_t *ring[], int *xfer_idx, int *await_send, in
 	Utility function for handling kProto_data packets, and place the data it contains
 	onto the passed-in receive ring.
 */
-void		handle_data(icmp_echo_packet_t *pkt, int total_len, forward_desc_t *ring[], int *await_send, int *insert_idx,  uint16_t *next_expected_seq) {
+void		handle_data(icmp_echo_packet_t *pkt, int total_len, proxy_desc_t *cur, int icmp_sock) {
+
+	forward_desc_t **ring = cur->recv_ring;
+	int *await_send = &cur->recv_wait_send;
+	int *insert_idx = &cur->recv_idx;
+	uint16_t *next_expected_seq = &cur->next_remote_seq;
+
 	ping_tunnel_pkt_t	*pt_pkt			= (ping_tunnel_pkt_t*)pkt->data;
 	int					expected_len	= sizeof(ip_packet_t) + sizeof(icmp_echo_packet_t) + sizeof(ping_tunnel_pkt_t); // 20+8+28
 	
@@ -1445,8 +1449,14 @@ void		handle_data(icmp_echo_packet_t *pkt, int total_len, forward_desc_t *ring[]
 				(*await_send)++;
 			}
 		}
-		//else
+		else {
+			if (cur->remote_ack_val >= s) { // old packet, maybe resent, so we reply ACK
+				pt_log(kLog_event, "Possibly recv resent packet. Reply ACK.\n");
+				queue_packet(icmp_sock, cur, kProto_ack, 0, 0);
+				cur->xfer.icmp_ack_out++;
+			}
 		//	pt_log(kLog_debug, "Packet discarded - outside receive window.\n");
+		}
 	}
 }
 

@@ -400,7 +400,7 @@ typedef struct {
 	void		print_statistics(xfer_stats_t *xfer, int is_continuous);
 	int			queue_packet(int icmp_sock, proxy_desc_t *cur, uint32_t state, char *buf, int num_bytes);
 	uint32_t	send_packets(forward_desc_t *ring[], int *xfer_idx, int *await_send, int *sock);
-	void		handle_data(icmp_echo_packet_t *pkt, int total_len, forward_desc_t *ring[], int *await_send, int *insert_idx, uint16_t *next_expected_seq);
+	void		handle_data(icmp_echo_packet_t *pkt, int total_len, proxy_desc_t *cur, int icmp_sock);
 	void		handle_ack(ping_tunnel_pkt_t *pt_pkt, proxy_desc_t *cur);
 	forward_desc_t*	create_fwd_desc(uint16_t seq_no, uint32_t data_len, char *data);
 	void		init_ip_packet(ip_packet_t *packet, uint16_t id, uint16_t frag_offset, uint16_t pkt_len, uint8_t ttl, uint32_t src_ip, uint32_t dst_ip, bool is_last_frag, bool dont_frag);
