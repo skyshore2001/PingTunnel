@@ -866,20 +866,20 @@ void*		pt_proxy(void *args) {
 void		print_statistics(xfer_stats_t *xfer, int is_continuous) {
 	const double	mb		= 1024.0*1024.0;
 	double			loss	= 0.0;
+	FILE			*fp		= is_continuous? stdout: log_file;
 	
 	if (xfer->icmp_out > 0)
 		loss	= (double)xfer->icmp_resent/(double)xfer->icmp_out;
 	
 	if (is_continuous)
-		printf("\r");
+		fprintf(fp, "\r");
 	
-	printf("[inf]: I/O: %6.2f/%6.2f mb ICMP I/O/R: %8d/%8d/%8d Loss: %4.1f%%",
+	fprintf(fp, "[inf]: I/O: %6.2f/%6.2f mb ICMP I/O/R: %8d/%8d/%8d Loss: %4.1f%%",
 			xfer->bytes_in/mb, xfer->bytes_out/mb, xfer->icmp_in, xfer->icmp_out, xfer->icmp_resent, loss);
 	
 	if (!is_continuous)
-		printf("\n");
-	else
-		fflush(stdout);
+		fprintf(fp, "\n");
+	fflush(fp);
 }
 
 
