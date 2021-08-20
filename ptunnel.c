@@ -724,7 +724,16 @@ void*		pt_proxy(void *args) {
 		int is_timeout = rv == 0;
 		
 		pthread_mutex_lock(&chain_lock);
-		for (prev=0,cur=chain;cur && cur->sock;cur=tmp) {
+		for (prev=0,cur=chain;cur;cur=tmp) {
+			if (cur->should_remove) {
+				pt_log(kLog_info, "\nSession statistics:\n");
+				queue_packet(fwd_sock, cur, kProto_close, 0, 0);
+				print_statistics(&cur->xfer, 0);
+				pt_log(kLog_info, "\n");
+				tmp	= cur->next;
+				remove_proxy_desc(cur, prev);
+				continue;
+			}
 			//	Client: If we're starting up, send a message to the remote end saying so,
 			//	causing him to connect to our desired endpoint.
 			if (cur->state == kProxy_start) {
@@ -732,14 +741,6 @@ void*		pt_proxy(void *args) {
 				queue_packet(fwd_sock, cur, cur->state, 0, 0);
 				cur->xfer.icmp_out++;
 				cur->state		= kProto_data;
-			}
-			if (cur->should_remove) {
-				pt_log(kLog_info, "\nSession statistics:\n");
-				print_statistics(&cur->xfer, 0);
-				pt_log(kLog_info, "\n");
-				tmp	= cur->next;
-				remove_proxy_desc(cur, prev);
-				continue;
 			}
 			//	Only handle traffic if there is traffic on the socket, we have
 			//	room in our send window AND we either don't use a password, or
@@ -786,8 +787,15 @@ void*		pt_proxy(void *args) {
 				cur->should_remove	= 1;
 				continue;
 			}
-			if (cur->recv_wait_send && cur->sock)
-				cur->xfer.bytes_in	+= send_packets(cur->recv_ring, &cur->recv_xfer_idx, &cur->recv_wait_send, &cur->sock);
+			if (cur->recv_wait_send && cur->sock) {
+				int rv = send_packets(cur->recv_ring, &cur->recv_xfer_idx, &cur->recv_wait_send, &cur->sock);
+				if (rv < 0) {
+					pt_log(kLog_error, "Dropping tunnel to %s:%d due to the TCP sock is closed.\n", inet_ntoa(*(struct in_addr*)&cur->dst_ip), cur->dst_port);
+					cur->should_remove = 1;
+					continue;
+				}
+				cur->xfer.bytes_in	+= rv;
+			}
 			
 			//	Check for any icmp packets requiring resend, and resend _only_ the first packet.
 			idx	= cur->send_first_ack;
@@ -1342,11 +1350,7 @@ uint32_t	send_packets(forward_desc_t *ring[], int *xfer_idx, int *await_send, in
 		if (fwd_desc->length > 0) {
 			bytes		= send(*sock, &fwd_desc->data[fwd_desc->length - fwd_desc->remaining], fwd_desc->remaining, 0);
 			if (bytes < 0) {
-				pt_log(kLog_error, "!!! Weirdness. Fail to send to TCP sock.\n");
-				//	TODO: send close stuff
-				close(*sock);
-				*sock	= 0;
-				break;
+				return -1; // TCP sock is closed.
 			}
 			fwd_desc->remaining	-= bytes;
 			total				+= bytes;
