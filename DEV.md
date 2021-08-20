@@ -208,29 +208,29 @@ But there will be 2 new problems:
 
 I refactor function queue_packet that does not put ACK in the queue:
 
-	bool add_to_queue = state != kProto_ack;
+	bool is_ack = state == kProto_ack;
 	...
 
-	if (add_to_queue)
+	if (! is_ack)
 		pt_pkt->seq_no			= htons(*seq);
 	else
 		pt_pkt->seq_no			= htons(*seq + 10000);
 	...
 
-	if (! add_to_queue) {
+	if (is_ack || cur->send_wait_ack >= kPing_window_size) {
 		return 0;
 	}
 
 	// add to cur->send_ring
-	// add seq-no of the session
+	// increase seq-no of the session
 
-I implement ACK packet with a special seq_no (seq+10000).
+I implement ACK packet with a special seq_no (seq+10000). It's OK even when uint16_t overflow.
 The packet will be handled in handle_packet by the other side.
-It's ignored in function handle_data (as a wrong order seq_no that exceeds window size), 
-then still handled in function handle_ack to clean the send queue of the other side. (I also change handle_ack the match the seq_no).
+It would not affect recv queue (ignore function handle_data), 
+but just clean the send queue of the other size (used in function handle_ack, I also change the seq-no match logic).
 
-If the ACK is lost, the other side should resend some old packet. 
-So when it detects old packet (that has been received, seq_no < the last seq_no the session handled), it replies ACK:
+If the ACK is lost, the other side cannot clean the queue and would resend some old packet. 
+So when it detects old packet (that has been received, seq_no < the last seq_no the session handled), just replies ACK:
 in function handle_data:
 
 			if (cur->remote_ack_val >= s) { // old packet, maybe resent, so we reply ACK

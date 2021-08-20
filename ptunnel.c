@@ -1090,7 +1090,8 @@ void		handle_packet(char *buf, int bytes, int is_pcap, struct sockaddr_in *addr,
 				}
 				
 				if (cur && cur->sock) {
-					if (pt_pkt->state == kProto_data || pt_pkt->state == kProxy_start || pt_pkt->state == kProto_ack)
+					// NOTE: don't handle_data on kProto_ack. ACK packet use special seqno.
+					if (pt_pkt->state == kProto_data || pt_pkt->state == kProxy_start)
 						handle_data(pkt, bytes, cur, icmp_sock);
 					handle_ack(pt_pkt, cur);
 					cur->last_activity		= time_as_double();
