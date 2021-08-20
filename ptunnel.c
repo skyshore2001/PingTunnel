@@ -1212,19 +1212,13 @@ static int ip_id_counter	= 1;
 /*	queue_packet:
 	Creates an ICMP packet descriptor, and sends it. The packet descriptor is added
 	to the given send ring, for potential resends later on.
+
+	For ACK packet or if the queue is full, just send but not add to queue.
+	If resends support is required, check if queue is full before call it (cur->send_wait_ack >= kPing_window_size).
 */
 int			queue_packet(int icmp_sock, proxy_desc_t *cur, uint32_t state, char *buf, int num_bytes) {
-	uint16_t id_no = cur->id_no;
-	uint16_t icmp_id = cur->icmp_id;
-	uint16_t *seq = &cur->my_seq;
 	icmp_desc_t *ring = cur->send_ring;
-	int *insert_idx = &cur->send_idx, *await_send = &cur->send_wait_ack;
-	uint32_t ip = cur->dst_ip;
-	uint32_t port = cur->dst_port;
-	int *first_ack = &cur->send_first_ack;
-	uint16_t *ping_seq = &cur->ping_seq;
-	bool add_to_queue = state != kProto_ack;
-	struct sockaddr_in *dest_addr = &cur->dest_addr;
+	bool is_ack = state == kProto_ack;
 
 	if (state == kProto_ack) {
 		cur->xfer.icmp_ack_out++;
@@ -1260,30 +1254,30 @@ int			queue_packet(int icmp_sock, proxy_desc_t *cur, uint32_t state, char *buf, 
 	ip_pkt->proto				= 1;	//	ICMP
 	ip_pkt->checksum			= 0;	//	maybe the kernel helps us out..?
 	ip_pkt->src_ip				= htonl(0x0);	//	insert source IP address here
-	ip_pkt->dst_ip				= dest_addr->sin_addr.s_addr;//htonl(0x7f000001);	//	localhost..
+	ip_pkt->dst_ip				= cur->dest_addr.sin_addr.s_addr;//htonl(0x7f000001);	//	localhost..
 	#else
 	pkt						= malloc(pkt_len);
 	#endif
 	
 	pkt->type				= cur->pkt_type;		//	ICMP Echo request or reply
 	pkt->code				= 0;		//	Must be zero (non-zero requires root)
-	pkt->identifier			= htons(icmp_id);
-	pkt->seq				= htons(*ping_seq);
+	pkt->identifier			= htons(cur->icmp_id);
+	pkt->seq				= htons(cur->ping_seq);
 	pkt->checksum			= 0;
-	(*ping_seq)++;
+	cur->ping_seq++;
 	//	Add our information
 	pt_pkt					= (ping_tunnel_pkt_t*)pkt->data;
 	pt_pkt->magic			= htonl(kPing_tunnel_magic);
-	pt_pkt->dst_ip			= ip;
-	pt_pkt->dst_port		= htonl(port);
+	pt_pkt->dst_ip			= cur->dst_ip;
+	pt_pkt->dst_port		= htonl(cur->dst_port);
 	pt_pkt->ack				= htonl(ack_val);
 	pt_pkt->data_len		= htonl(num_bytes);
 	pt_pkt->state			= htonl(state);
-	if (add_to_queue)
-		pt_pkt->seq_no			= htons(*seq);
+	if (! is_ack)
+		pt_pkt->seq_no			= htons(cur->my_seq);
 	else
-		pt_pkt->seq_no			= htons(*seq + 10000);
-	pt_pkt->id_no			= htons(id_no);
+		pt_pkt->seq_no			= htons(cur->my_seq + 10000);
+	pt_pkt->id_no			= htons(cur->id_no);
 	//	Copy user data
 	if (buf && num_bytes > 0)
 		memcpy(pt_pkt->data, buf, num_bytes);
@@ -1296,11 +1290,11 @@ int			queue_packet(int icmp_sock, proxy_desc_t *cur, uint32_t state, char *buf, 
 	
 	//	Send it!
 	pt_log(kLog_sendrecv, "Send: %d [%d] bytes [seq = %d] [type = %s] [ack = %d] [icmp = %d] [user = %s]\n",
-			pkt_len, num_bytes, *seq, state_name[state & (~kFlag_mask)], ack_val, cur->pkt_type, ((state & kUser_flag) == kUser_flag ? "yes" : "no"));
+			pkt_len, num_bytes, cur->my_seq, state_name[state & (~kFlag_mask)], ack_val, cur->pkt_type, ((state & kUser_flag) == kUser_flag ? "yes" : "no"));
 	#if kPT_add_iphdr
-	err						= sendto(icmp_sock, (const void*)ip_pkt, pkt_len, 0, (struct sockaddr*)dest_addr, sizeof(struct sockaddr));
+	err						= sendto(icmp_sock, (const void*)ip_pkt, pkt_len, 0, (struct sockaddr*)&cur->dest_addr, sizeof(struct sockaddr));
 	#else
-	err						= sendto(icmp_sock, (const void*)pkt, pkt_len, 0, (struct sockaddr*)dest_addr, sizeof(struct sockaddr));
+	err						= sendto(icmp_sock, (const void*)pkt, pkt_len, 0, (struct sockaddr*)&cur->dest_addr, sizeof(struct sockaddr));
 	#endif
 	if (err < 0) {
 		pt_log(kLog_error, "Failed to send ICMP packet: %s\n", strerror(errno));
@@ -1313,28 +1307,28 @@ int			queue_packet(int icmp_sock, proxy_desc_t *cur, uint32_t state, char *buf, 
 	cur->last_ack	= time_as_double();
 	cur->xfer.icmp_out	++;
 	cur->xfer.bytes_out	+= num_bytes;
-	if (! add_to_queue) {
+	if (is_ack || cur->send_wait_ack >= kPing_window_size) {
 		return 0;
 	}
 
 	//	Update sequence no's and so on
 	#if kPT_add_iphdr
 	//	NOTE: Retry mechanism needs update for PT_add_ip_hdr
-	ring[*insert_idx].pkt			= ip_pkt;
+	ring[cur->send_idx].pkt			= ip_pkt;
 	#else
-	ring[*insert_idx].pkt			= pkt;
+	ring[cur->send_idx].pkt			= pkt;
 	#endif
-	ring[*insert_idx].pkt_len		= pkt_len;
-	ring[*insert_idx].last_resend	= time_as_double();
-	ring[*insert_idx].seq_no		= *seq;
-	ring[*insert_idx].icmp_id		= icmp_id;
-	(*seq)++;
-	if (!ring[*first_ack].pkt)
-		*first_ack					= *insert_idx;
-	(*await_send)++;
-	(*insert_idx)++;
-	if (*insert_idx >= kPing_window_size)
-		*insert_idx	= 0;
+	ring[cur->send_idx].pkt_len		= pkt_len;
+	ring[cur->send_idx].last_resend	= time_as_double();
+	ring[cur->send_idx].seq_no		= cur->my_seq;
+	ring[cur->send_idx].icmp_id		= cur->icmp_id;
+	cur->my_seq++;
+	if (!ring[cur->send_first_ack].pkt)
+		cur->send_first_ack			= cur->send_idx;
+	cur->send_wait_ack++;
+	cur->send_idx++;
+	if (cur->send_idx >= kPing_window_size)
+		cur->send_idx	= 0;
 	return 0;
 }
 
