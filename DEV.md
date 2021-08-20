@@ -21,7 +21,7 @@ Furthermore, the server uses 100% CPU during the data transferring. It affects 1
 I also tested it in intranet without packet loss or speed limitation. 
 The max speed the around 64KB/s.
 
-### Problem 1: slow response of ACK packet
+### Problem 1: slow response of ACK packet and lots of packet loss cause low performance
 
 The default configuration is:
 
@@ -156,28 +156,21 @@ The thread should be blocked in such case. But it's not easy to implement an syn
 In multi-thread scenario, a typical message-queue may be useful, or semaphore is also OK; but it's not multi-thread scenario.
 
 Finally I satisfied myself with such enhanced but simple solution: 
-If the send queue is full, I make a mark on the socket and don't select on this socket.
+If the send queue is full, just simply don't select on the socket, which pauses receiving and pends the thread if only 1 session.
 
 	while (1) {
 		FD_ZERO(&set);
+			// if the send queue is full, pause recv
 			// if (cur->sock) <-- this is the original condition
-			if (cur->sock > 0) { // <0 means pause
+			if (cur->sock && cur->send_wait_ack < kPing_window_size) {
 				FD_SET(cur->sock, &set);
-				...
+				if (cur->sock >= max_sock)
+					max_sock	= cur->sock+1;
 			}
 		...
-		select(max_sock, &set, 0, 0, &timeout);	//	Don't care about return val, since we need to check for new states anyway..
-
-			// if the send queue is full, pause recv
-			if (cur->send_wait_ack == kPing_window_size) {
-				cur->sock = -cur->sock; // pause recv
-			}
-			else if (cur->sock < 0) {
-				cur->sock = -cur->sock; // resume recv
-			}
+		select(max_sock, &set, 0, 0, &timeout);
+		...
 	}
-
-I does not add any new variable, just simply negate the sock value to mark it 'pause'.
 
 It works much better than the sleep version. In the intranet, the speed is ~10MB/s (window size=8) or >50MB/s with more window size.
 

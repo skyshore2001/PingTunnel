@@ -710,7 +710,8 @@ void*		pt_proxy(void *args) {
 		max_sock		= fwd_sock+1;
 		pthread_mutex_lock(&chain_lock);
 		for (cur=chain;cur;cur=cur->next) {
-			if (cur->sock > 0) { // <0 means pause
+			// if the send queue is full, pause recv
+			if (cur->sock && cur->send_wait_ack < kPing_window_size) {
 				FD_SET(cur->sock, &set);
 				if (cur->sock >= max_sock)
 					max_sock	= cur->sock+1;
@@ -805,13 +806,6 @@ void*		pt_proxy(void *args) {
 			if ((is_timeout || cur->xfer.icmp_in % (kPing_window_size/2)==0) && (uint16_t)(cur->remote_ack_val+1) != cur->next_remote_seq){
 				queue_packet(fwd_sock, cur, kProto_ack, 0, 0);
 				cur->xfer.icmp_ack_out++;
-			}
-			// if the send queue is full, pause recv
-			if (cur->send_wait_ack == kPing_window_size) {
-				cur->sock = -cur->sock; // pause recv
-			}
-			else if (cur->sock < 0) {
-				cur->sock = -cur->sock; // resume recv
 			}
 		}
 		pthread_mutex_unlock(&chain_lock);
