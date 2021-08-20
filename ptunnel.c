@@ -1628,11 +1628,15 @@ void	pt_log(int level, char *fmt, ...) {
 			vsnprintf(log+header_len,sizeof(log)-header_len,fmt,args);
 			syslog(syslog_levels[level], "%s", log);
 		}
-		else
+		else {
 #endif /* !WIN32 */
-			fprintf(log_file, "%s", header[level]), vfprintf(log_file, fmt, args);
+			char tmstr[40];
+			time_t t = time(NULL);
+			strftime(tmstr, sizeof(tmstr), "%Y-%m-%d %H:%M:%S", localtime(&t));
+			fprintf(log_file, "[%s] %s", tmstr, header[level]), vfprintf(log_file, fmt, args);
 		va_end(args);
 #ifndef WIN32
+		}
 		if (log_file != stdout && !use_syslog)
 #else
 		if (log_file != stdout)
