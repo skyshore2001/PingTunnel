@@ -727,7 +727,6 @@ void*		pt_proxy(void *args) {
 		for (prev=0,cur=chain;cur;cur=tmp) {
 			if (cur->should_remove) {
 				pt_log(kLog_info, "\nSession statistics:\n");
-				queue_packet(fwd_sock, cur, kProto_close, 0, 0);
 				print_statistics(&cur->xfer, 0);
 				pt_log(kLog_info, "\n");
 				tmp	= cur->next;
@@ -739,7 +738,6 @@ void*		pt_proxy(void *args) {
 			if (cur->state == kProxy_start) {
 				pt_log(kLog_verbose, "Sending proxy request.\n");
 				queue_packet(fwd_sock, cur, cur->state, 0, 0);
-				cur->xfer.icmp_out++;
 				cur->state		= kProto_data;
 			}
 			//	Only handle traffic if there is traffic on the socket, we have
@@ -757,8 +755,6 @@ void*		pt_proxy(void *args) {
 					//	No need to update prev
 					continue;
 				}
-				cur->xfer.bytes_out	+= bytes;
-				cur->xfer.icmp_out++;
 				queue_packet(fwd_sock, cur, cur->state, cur->buf, bytes);
 			}
 			prev	= cur;
@@ -783,7 +779,8 @@ void*		pt_proxy(void *args) {
 		now		= time_as_double();
 		for (cur=chain;cur;cur=cur->next) {
 			if (cur->last_activity + kAutomatic_close_timeout < now) {
-				pt_log(kLog_info, "Dropping tunnel to %s:%d due to inactivity.\n", inet_ntoa(*(struct in_addr*)&cur->dst_ip), cur->dst_port, cur->id_no);
+				pt_log(kLog_info, "Dropping tunnel to %s:%d due to inactivity.\n", inet_ntoa(*(struct in_addr*)&cur->dst_ip), cur->dst_port/*, cur->id_no*/);
+				send_termination_msg(cur, fwd_sock);
 				cur->should_remove	= 1;
 				continue;
 			}
@@ -791,6 +788,7 @@ void*		pt_proxy(void *args) {
 				int rv = send_packets(cur->recv_ring, &cur->recv_xfer_idx, &cur->recv_wait_send, &cur->sock);
 				if (rv < 0) {
 					pt_log(kLog_error, "Dropping tunnel to %s:%d due to the TCP sock is closed.\n", inet_ntoa(*(struct in_addr*)&cur->dst_ip), cur->dst_port);
+					send_termination_msg(cur, fwd_sock);
 					cur->should_remove = 1;
 					continue;
 				}
@@ -813,7 +811,6 @@ void*		pt_proxy(void *args) {
 			//	Figure out if it's time to send an explicit acknowledgement
 			if ((is_timeout || cur->xfer.icmp_in % (kPing_window_size/2)==0) && (uint16_t)(cur->remote_ack_val+1) != cur->next_remote_seq){
 				queue_packet(fwd_sock, cur, kProto_ack, 0, 0);
-				cur->xfer.icmp_ack_out++;
 			}
 		}
 		pthread_mutex_unlock(&chain_lock);
@@ -1229,6 +1226,10 @@ int			queue_packet(int icmp_sock, proxy_desc_t *cur, uint32_t state, char *buf, 
 	bool add_to_queue = state != kProto_ack;
 	struct sockaddr_in *dest_addr = &cur->dest_addr;
 
+	if (state == kProto_ack) {
+		cur->xfer.icmp_ack_out++;
+	}
+
 	state |= cur->type_flag;
 	
 	#if kPT_add_iphdr
@@ -1310,6 +1311,8 @@ int			queue_packet(int icmp_sock, proxy_desc_t *cur, uint32_t state, char *buf, 
 	
 	cur->remote_ack_val = ack_val;
 	cur->last_ack	= time_as_double();
+	cur->xfer.icmp_out	++;
+	cur->xfer.bytes_out	+= num_bytes;
 	if (! add_to_queue) {
 		return 0;
 	}
@@ -1452,7 +1455,6 @@ void		handle_data(icmp_echo_packet_t *pkt, int total_len, proxy_desc_t *cur, int
 			if (cur->remote_ack_val >= s) { // old packet, maybe resent, so we reply ACK
 				pt_log(kLog_event, "Recv old packet seq=%d. Reply ack=%d\n", pt_pkt->seq_no, cur->next_remote_seq-1);
 				queue_packet(icmp_sock, cur, kProto_ack, 0, 0);
-				cur->xfer.icmp_ack_out++;
 			}
 		//	pt_log(kLog_debug, "Packet discarded - outside receive window.\n");
 		}
@@ -1595,14 +1597,11 @@ int				validate_challenge(challenge_t *local, challenge_t *remote) {
 }
 
 
-/*	send_termination_msg: Sends two packets to the remote end, informing it that
+/*	send_termination_msg: informing remote end that
 	the tunnel is being closed down.
 */
 void		send_termination_msg(proxy_desc_t *cur, int icmp_sock) {
-	//	Send packet twice, hoping at least one of them makes it through..
 	queue_packet(icmp_sock, cur, kProto_close, 0, 0);
-	queue_packet(icmp_sock, cur, kProto_close, 0, 0);
-	cur->xfer.icmp_out	+= 2;
 }
 
 
