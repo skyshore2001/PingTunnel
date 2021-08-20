@@ -1348,7 +1348,7 @@ uint32_t	send_packets(forward_desc_t *ring[], int *xfer_idx, int *await_send, in
 		if (fwd_desc->length > 0) {
 			bytes		= send(*sock, &fwd_desc->data[fwd_desc->length - fwd_desc->remaining], fwd_desc->remaining, 0);
 			if (bytes < 0) {
-				printf("Weirdness.\n");
+				pt_log(kLog_error, "!!! Weirdness. Fail to send to TCP sock.\n");
 				//	TODO: send close stuff
 				close(*sock);
 				*sock	= 0;
@@ -1379,10 +1379,6 @@ uint32_t	send_packets(forward_desc_t *ring[], int *xfer_idx, int *await_send, in
 void		handle_data(icmp_echo_packet_t *pkt, int total_len, proxy_desc_t *cur, int icmp_sock) {
 
 	forward_desc_t **ring = cur->recv_ring;
-	int *await_send = &cur->recv_wait_send;
-	int *insert_idx = &cur->recv_idx;
-	uint16_t *next_expected_seq = &cur->next_remote_seq;
-
 	ping_tunnel_pkt_t	*pt_pkt			= (ping_tunnel_pkt_t*)pkt->data;
 	int					expected_len	= sizeof(ip_packet_t) + sizeof(icmp_echo_packet_t) + sizeof(ping_tunnel_pkt_t); // 20+8+28
 	
@@ -1405,27 +1401,27 @@ void		handle_data(icmp_echo_packet_t *pkt, int total_len, proxy_desc_t *cur, int
 		//	TODO: This error isn't fatal, so it should definitely be handled in some way. We could simply discard it.
 		exit(0);
 	}
-	if (pt_pkt->seq_no == *next_expected_seq) {
+	if (pt_pkt->seq_no == cur->next_remote_seq) {
 		//	hmm, what happens if this test is true?
-		if (!ring[*insert_idx]) {	//  && pt_pkt->state == kProto_data
+		if (!ring[cur->recv_idx]) {	//  && pt_pkt->state == kProto_data
 		//	pt_log(kLog_debug, "Queing data packet: %d\n", pt_pkt->seq_no);
-			ring[*insert_idx]	= create_fwd_desc(pt_pkt->seq_no, pt_pkt->data_len, pt_pkt->data);
-			(*await_send)++;
-			(*insert_idx)++;
+			ring[cur->recv_idx]	= create_fwd_desc(pt_pkt->seq_no, pt_pkt->data_len, pt_pkt->data);
+			cur->recv_wait_send++;
+			cur->recv_idx++;
 		}
-		else if (ring[*insert_idx])
+		else if (ring[cur->recv_idx])
 			pt_log(kLog_event, "Dup packet? seq_no=%d\n", pt_pkt->seq_no);
 		
-		(*next_expected_seq)++;
-		if (*insert_idx >= kPing_window_size)
-			*insert_idx	= 0;
+		cur->next_remote_seq++;
+		if (cur->recv_idx >= kPing_window_size)
+			cur->recv_idx	= 0;
 		//	Check if we have already received some of the next packets
-		while (ring[*insert_idx]) {
-			if (ring[*insert_idx]->seq_no == *next_expected_seq) {
-				(*next_expected_seq)++;
-				(*insert_idx)++;
-				if (*insert_idx >= kPing_window_size)
-					*insert_idx	= 0;
+		while (ring[cur->recv_idx]) {
+			if (ring[cur->recv_idx]->seq_no == cur->next_remote_seq) {
+				cur->next_remote_seq++;
+				cur->recv_idx++;
+				if (cur->recv_idx >= kPing_window_size)
+					cur->recv_idx	= 0;
 			}
 			else
 				break;
@@ -1434,29 +1430,29 @@ void		handle_data(icmp_echo_packet_t *pkt, int total_len, proxy_desc_t *cur, int
 	else {
 		int	r, s, d, pos;
 		pos	= -1;		//	If pos ends up staying -1, packet is discarded.
-		r	= *next_expected_seq;
+		r	= cur->next_remote_seq;
 		s	= pt_pkt->seq_no;
 		d	= s - r;
 		if (d < 0) {	//	This packet _may_ be old, or seq_no may have wrapped around
 			d	= (s+0xFFFF) - r;
 			if (d < kPing_window_size) {
 				//	Counter has wrapped, so we should add this packet to the recv ring
-				pos	= ((*insert_idx)+d) % kPing_window_size;
+				pos	= (cur->recv_idx+d) % kPing_window_size;
 			}
 		}
 		else if (d < kPing_window_size)
-			pos	= ((*insert_idx)+d) % kPing_window_size;
+			pos	= (cur->recv_idx+d) % kPing_window_size;
 		
 		if (pos != -1) {
 			if (!ring[pos]) {
-				pt_log(kLog_event, "Out of order. Expected: %d  Got: %d  Inserted: %d (cur = %d)\n", *next_expected_seq, pt_pkt->seq_no, pos, (*insert_idx));
+				pt_log(kLog_event, "Out of order. Expected: %d  Got: %d  Inserted: %d (cur = %d)\n", cur->next_remote_seq, pt_pkt->seq_no, pos, cur->recv_idx);
 				ring[pos]	= create_fwd_desc(pt_pkt->seq_no, pt_pkt->data_len, pt_pkt->data);
-				(*await_send)++;
+				cur->recv_wait_send++;
 			}
 		}
 		else {
 			if (cur->remote_ack_val >= s) { // old packet, maybe resent, so we reply ACK
-				pt_log(kLog_event, "Recv old packet. Reply ACK.\n");
+				pt_log(kLog_event, "Recv old packet seq=%d. Reply ack=%d\n", pt_pkt->seq_no, cur->next_remote_seq-1);
 				queue_packet(icmp_sock, cur, kProto_ack, 0, 0);
 				cur->xfer.icmp_ack_out++;
 			}
