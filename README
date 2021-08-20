@@ -17,6 +17,8 @@ The official ptunnel website is located here:
 The Windows port was created by Mike Miller:
    <mike@mikeage.net>
 
+This is the performance tunning version by LIANG Jian <liangjian_2001@126.com>.
+For details, refer to DEV.md.
 
 Compiling
 ---------
