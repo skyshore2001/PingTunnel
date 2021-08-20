@@ -710,8 +710,9 @@ void*		pt_proxy(void *args) {
 		max_sock		= fwd_sock+1;
 		pthread_mutex_lock(&chain_lock);
 		for (cur=chain;cur;cur=cur->next) {
+			bool authed = (!password || cur->authenticated);
 			// if the send queue is full, pause recv
-			if (cur->sock && cur->send_wait_ack < kPing_window_size) {
+			if (cur->sock && cur->send_wait_ack < kPing_window_size && authed) {
 				FD_SET(cur->sock, &set);
 				if (cur->sock >= max_sock)
 					max_sock	= cur->sock+1;
@@ -1088,6 +1089,8 @@ void		handle_packet(char *buf, int bytes, int is_pcap, struct sockaddr_in *addr,
 					pt_log(kLog_debug, "Ignoring packet with seq-no %d - not authenticated yet.\n", pt_pkt->seq_no);
 					return;
 				}
+				if (type_flag == kUser_flag)
+					cur->authenticated	= 1;
 				
 				if (cur && cur->sock) {
 					// NOTE: don't handle_data on kProto_ack. ACK packet use special seqno.
