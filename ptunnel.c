@@ -780,7 +780,7 @@ void*		pt_proxy(void *args) {
 		now		= time_as_double();
 		for (cur=chain;cur;cur=cur->next) {
 			if (cur->last_activity + kAutomatic_close_timeout < now) {
-				pt_log(kLog_info, "Dropping tunnel to %s:%d due to inactivity.\n", inet_ntoa(*(struct in_addr*)&cur->dst_ip), cur->dst_port/*, cur->id_no*/);
+				pt_log(kLog_info, "Dropping session #%d [%s:%d] due to inactivity.\n", cur->id_no, inet_ntoa(*(struct in_addr*)&cur->dst_ip), cur->dst_port);
 				send_termination_msg(cur, fwd_sock);
 				cur->should_remove	= 1;
 				continue;
@@ -788,7 +788,7 @@ void*		pt_proxy(void *args) {
 			if (cur->recv_wait_send && cur->sock) {
 				int rv = send_packets(cur->recv_ring, &cur->recv_xfer_idx, &cur->recv_wait_send, &cur->sock);
 				if (rv < 0) {
-					pt_log(kLog_error, "Dropping tunnel to %s:%d due to the TCP sock is closed.\n", inet_ntoa(*(struct in_addr*)&cur->dst_ip), cur->dst_port);
+					pt_log(kLog_error, "Dropping session #%d [%s:%d] due to the TCP sock is closed.\n", cur->id_no, inet_ntoa(*(struct in_addr*)&cur->dst_ip), cur->dst_port);
 					send_termination_msg(cur, fwd_sock);
 					cur->should_remove = 1;
 					continue;
@@ -799,7 +799,7 @@ void*		pt_proxy(void *args) {
 			//	Check for any icmp packets requiring resend, and resend _only_ the first packet.
 			idx	= cur->send_first_ack;
 			if (cur->send_ring[idx].pkt && cur->send_ring[idx].last_resend+kResend_interval < now) {
-				pt_log(kLog_event, "Resending packet with seq-no %d.\n", cur->send_ring[idx].seq_no);
+				pt_log(kLog_event, "Resend: [seq=%d]\n", cur->send_ring[idx].seq_no);
 				cur->send_ring[idx].last_resend		= now;
 				cur->send_ring[idx].pkt->seq		= htons(cur->ping_seq);
 				cur->ping_seq++;
@@ -991,9 +991,9 @@ void		handle_packet(char *buf, int bytes, int is_pcap, struct sockaddr_in *addr,
 			pt_pkt->state	&= ~kFlag_mask;
 			//	This test essentially verifies that the packet comes from someone who isn't us.
 			if ((pkt_flag == kUser_flag && type_flag == kProxy_flag) || (pkt_flag == kProxy_flag && type_flag == kUser_flag)) {
-				pt_log(kLog_sendrecv, "Recv: %d [%d] bytes [seq = %d] [type = %s] [ack = %d] [icmp = %d] [user = %s] [pcap = %d]\n",
-								bytes, ntohl(pt_pkt->data_len), pt_pkt->seq_no, state_name[pt_pkt->state & (~kFlag_mask)],
-								ntohl(pt_pkt->ack), pkt->type, (pkt_flag == kUser_flag ? "yes" : "no"), is_pcap);
+				pt_log(kLog_sendrecv, "#%d Recv: [type=%s] [seq=%d] [ack=%d] [size=%d] [icmp=%s] [user=%s] [pcap=%d]\n",
+								pt_pkt->id_no, state_name[pt_pkt->state & (~kFlag_mask)], pt_pkt->seq_no, ntohl(pt_pkt->ack), ntohl(pt_pkt->data_len), 
+								(pkt->type == kICMP_echo_request ? "request" : "reply"), (pkt_flag == kUser_flag ? "yes" : "no"), is_pcap);
 			
 				pt_pkt->data_len	= ntohl(pt_pkt->data_len);
 				pt_pkt->ack			= ntohl(pt_pkt->ack);
@@ -1005,7 +1005,7 @@ void		handle_packet(char *buf, int bytes, int is_pcap, struct sockaddr_in *addr,
 							pt_log(kLog_verbose, "Dropping request: ID was recently in use.\n");
 							return;
 						}
-						pt_log(kLog_info, "Starting new session to %s:%d with ID %d\n", inet_ntoa(*(struct in_addr*)&pt_pkt->dst_ip), ntohl(pt_pkt->dst_port), pt_pkt->id_no);
+						pt_log(kLog_info, "Starting new session to %s:%d with ID #%d\n", inet_ntoa(*(struct in_addr*)&pt_pkt->dst_ip), ntohl(pt_pkt->dst_port), pt_pkt->id_no);
 						if ((given_dst_ip && given_dst_ip != pt_pkt->dst_ip) || (-1 != tcp_port && tcp_port != ntohl(pt_pkt->dst_port))) {
 							pt_log(kLog_info, "Destination administratively prohibited!\n");
 							return;
@@ -1240,6 +1240,7 @@ int			queue_packet(int icmp_sock, proxy_desc_t *cur, uint32_t state, char *buf, 
 	icmp_echo_packet_t	*pkt	= 0;
 	ping_tunnel_pkt_t	*pt_pkt	= 0;
 	uint16_t			ack_val	= cur->next_remote_seq-1;
+	uint16_t			seq_val = !is_ack? cur->my_seq: cur->my_seq+10000;
 
 	if (pkt_len % 2)
 		pkt_len++;
@@ -1277,10 +1278,7 @@ int			queue_packet(int icmp_sock, proxy_desc_t *cur, uint32_t state, char *buf, 
 	pt_pkt->ack				= htonl(ack_val);
 	pt_pkt->data_len		= htonl(num_bytes);
 	pt_pkt->state			= htonl(state);
-	if (! is_ack)
-		pt_pkt->seq_no			= htons(cur->my_seq);
-	else
-		pt_pkt->seq_no			= htons(cur->my_seq + 10000);
+	pt_pkt->seq_no			= htons(seq_val);
 	pt_pkt->id_no			= htons(cur->id_no);
 	//	Copy user data
 	if (buf && num_bytes > 0)
@@ -1293,8 +1291,8 @@ int			queue_packet(int icmp_sock, proxy_desc_t *cur, uint32_t state, char *buf, 
 	#endif
 	
 	//	Send it!
-	pt_log(kLog_sendrecv, "Send: %d [%d] bytes [seq = %d] [type = %s] [ack = %d] [icmp = %d] [user = %s]\n",
-			pkt_len, num_bytes, cur->my_seq, state_name[state & (~kFlag_mask)], ack_val, cur->pkt_type, ((state & kUser_flag) == kUser_flag ? "yes" : "no"));
+	pt_log(kLog_sendrecv, "#%d Send: [type=%s] [seq=%d] [ack=%d] [size=%d] [icmp=%s] [user=%s]\n",
+			cur->id_no, state_name[state & (~kFlag_mask)], seq_val, ack_val, num_bytes, (pkt->type == kICMP_echo_request ? "request" : "reply"), ((state & kUser_flag) == kUser_flag ? "yes" : "no"));
 	#if kPT_add_iphdr
 	err						= sendto(icmp_sock, (const void*)ip_pkt, pkt_len, 0, (struct sockaddr*)&cur->dest_addr, sizeof(struct sockaddr));
 	#else
