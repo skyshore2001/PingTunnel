@@ -810,7 +810,11 @@ void*		pt_proxy(void *args) {
 				cur->xfer.icmp_resent++;
 			}
 			//	Figure out if it's time to send an explicit acknowledgement
-			if ((is_timeout || cur->xfer.icmp_in % (kPing_window_size/2)==0) && (uint16_t)(cur->remote_ack_val+1) != cur->next_remote_seq){
+			//	NOTE: force_ack is not for ack, but notify NAT device for keep-alive (required from intranet to public).
+			//	why 5.0s? it MUST be less than the NAT aging time that is typically 10s for icmp request.
+			bool force_ack = (cur->pkt_type == kICMP_echo_request && cur->last_ack+5.0 < now);
+			bool do_ack = (is_timeout || cur->xfer.icmp_in % (kPing_window_size/2)==0) && (uint16_t)(cur->remote_ack_val+1) != cur->next_remote_seq;
+			if (force_ack || do_ack){
 				queue_packet(fwd_sock, cur, kProto_ack, 0, 0);
 			}
 		}
